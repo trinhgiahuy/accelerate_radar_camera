@@ -3,7 +3,7 @@ from functools import lru_cache
 import cv2
 import numpy as np
 import time
-
+import psutil
 from picamera2 import MappedArray, Picamera2
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import (NetworkIntrinsics,
@@ -96,6 +96,8 @@ if __name__ == "__main__":
     labels = get_labels()	
 
     print("Started! Press 'q' to quit.")
+    frame_count = 0
+    start_time = time.time()
 
     while True:
         metadata = picam2.capture_metadata()
@@ -104,6 +106,15 @@ if __name__ == "__main__":
         # Capture frame
         frame = picam2.capture_array()
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        fps = frame_count / (time.time() - start_time)
+        memory = psutil.virtual_memory()
+        cpu_percent = psutil.cpu_percent()
+        fps_text = f"FPS: {fps:.2f}"
+        mem_use_text= f"Memory Usage: {memory.percent}%"
+        cpu_use_text = f"CPU Usage: {cpu_percent}%"
+        cv2.putText(frame, fps_text, (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255,0), 2)
+        cv2.putText(frame, mem_use_text, (10,50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        cv2.putText(frame, cpu_use_text, (10,70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
         draw_detections(frame)
 
         # Show the live preview using OpenCV
@@ -114,11 +125,16 @@ if __name__ == "__main__":
             for result in last_results:
                 label = f"{labels[int(result.category)]} ({result.conf:.2f})"
                 print(f"Detected {label}")
+        if frame_count % 10 == 0:
+            print(f"FPS: {fps:.2f}")
+            print(f"Memory Usage: {memory.percent}%")
+            print(f"CPU Usage: {cpu_percent}%")
 
         # Save image if enabled
         if save_images:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             cv2.imwrite(f"frame_{timestamp}.jpg", frame)
+        frame_count += 1
 
         # Break the loop on 'q' key
         if cv2.waitKey(1000 // frame_rate) & 0xFF == ord("q"):
