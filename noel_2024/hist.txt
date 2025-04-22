@@ -1,0 +1,92 @@
+    1  sudo apt-get update && sudo apt-get upgrade
+    2  ip a
+    3  git clone https://github.com/Nerdy-Things/raspberry-pi-ai-camera-yolov8.git
+    4  cd raspberry-pi-ai-camera-yolov8/
+    5  ./install.sh 
+    6  cd raspberry-pi-ai-camera-yolov8/
+    7  vi recognition.py 
+    8  python3 recognition.py 
+    9  ldd ~/.local/lib/python3.11/site-packages/cv2/qt/plugins/platforms/libqxcb.so 
+   10  python3 -m pip
+   11  python3 -m pip uninstall opencv-python
+   12  python3 -m pip uninstall opencv-python --break-system-packages
+   13  python3 -m pip install opencv-python-headless --break-system-packages
+   14  python3 recognition.py 
+   15  ls
+   16  ls data/
+   17  cd data/images/
+   18  ls
+   19  cd 2024-12-18/
+   20  ls
+   21  clear
+   22  sudo apt-get install realvnc-vnc-viewer
+   23  vncserver-x11
+   24  clear
+   25  sudo reboot 
+   26  vncviewer 
+   27  vncserver-x11
+   28  sudo raspi-config 
+   29  sudo shutdown -h now
+   30  cd raspberry-pi-ai-camera-yolov8/
+   31  vi optimize_run.py
+   32  python3 optimize_run.py 
+   33  pip uninstall opencv-python-headless -y 
+   34  python3 -m pip uninstall opencv-python-headless --break-system-packages
+   35  python3 -m pip install opencv-python --upgrade --break-system-packages
+   36  python3 optimize_run.py 
+   37  vi optimize_run.py 
+   38  python3 optimize_run.py 
+   39  vi optimize_run.py 
+   40  python3 optimize_run.py 
+   41  vi optimize_run.py 
+   42  nano optimize_run.py 
+   43  vi optimize_run.py 
+   44  python3 optimize_run.py 
+   45  vi optimize_run.py 
+   46  vi optimize_2.py
+   47  python3 optimize_2.py 
+   48  python3 -m pip install opencv-python --upgrade --break-system-packages
+   49  cd raspberry-pi-ai-camera-yolov8/
+   50  python3 optimize_run.py 
+   51  vi optimize_run.py 
+   52  python3 optimize_run.py 
+   53  nano optimize_run.py 
+   54  python3 optimize_run.py 
+   55  nano optimize_run.py 
+   56  python3 optimize_run.py 
+   57  sudo shutdown -h now
+   58  cd raspberry-pi-ai-camera-yolov8/
+   59  nano optimize_
+   60  nano optimize_run.py 
+   61  cd raspberry-pi-ai-camera-yolov8/
+   62  cp -p optimize_run.py optimize_multi_thread.py
+   63  vi optimize_multi_thread.py 
+   64  nano optimize_multi_thread.py 
+   65  sudo shutdown -h now
+   66  cd raspberry-pi-ai-camera-yolov8/
+   67  python3 optimize_multi_thread.py 
+   68  cd raspberry-pi-ai-camera-yolov8/
+   69  python3 optimize_multi_thread.py 
+   70  python3 optimize_run.py 
+   71  sudo pip3
+   72  sudo pip3 install ifxradarsdk
+   73  sudo pip3 install ifxradarsdk --break-system-packages
+   74  sudo pip install ifxradarsdk --break-system-packages
+   75  uname -a
+   76  cat /etc/os-release 
+   77  ls
+   78  sudo pip3 install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl 
+   79  sudo pip install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl --break-system-packages
+   80  sudo shutdown -h now
+   81  ls
+   82  sudo pip install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl --break-system-packages
+   83  pip3 install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl --break-system-packages
+   84  pip install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl --break-system-packages
+   85  python -m pip install --upgrade pip wheel setuptools
+   86  python -m pip install --upgrade pip wheel setuptools --break-system-packages
+   87  pip install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl
+   88  pip install ifxradarsdk-3.6.4+4b4a6245-py3-none-linux_x86_64.whl --break-system-packages
+   89  sudo shutdown -h now
+   90  ls
+   91  history 
+   92  history > hist.txt
