@@ -115,6 +115,7 @@ class RadarDraw:
         self._vmin = -60 # Default min dB for plotting
         self._vmax = 0 # Default max dB for plotting
         self.display_is_enabled = display_is_enabled
+        
     def setup_plot(self):
         """Sets up the Matplotlib figure and axes. Call this from the main thread."""
         if not plt or not self.display_is_enabled:
@@ -249,17 +250,8 @@ class Detection:
     def __init__(self, coords, category, conf, metadata, cam_instance, net_intrinsics):
         self.category = category
         self.conf = conf
-        #try:
-        #    # Ensure net_intrinsics is valid before calling
-        #    if net_intrinsics and hasattr(net_intrinsics_obj, 'convert_inference_coords'):
-        #         #self.box_xywh = net_intrinsics_obj.convert_inference_coords(coords, metadata, cam_instance)
         self.box_xywh = imx500.convert_inference_coords(coords, metadata, cam_instance)
-        #    else:
-        #         logging.error("NetworkIntrinsics object invalid in Detection init.")
-        #         self.box_xywh = [0,0,0,0] # Default invalid box
-        #except Exception as e:
-        #    logging.error(f"Error converting inference coords: {e}")
-        #self.box_xywh = [0,0,0,0]
+
 
     def to_dict(self):
          """Converts detection to a JSON-serializable dictionary."""
@@ -344,9 +336,7 @@ def parse_detections(metadata: dict, cam_instance, net_intrinsics):
 
 def draw_detections(frame, detection_results, net_intrinsics):
     """Draw detections onto frame copy. Returns drawn RGB frame and person count."""
-    #if not net_intrinsics_obj: return frame_rgb, 0
-    #labels_cache_key = (tuple(net_intrinsics_obj.labels), net_intrinsics_obj.ignore_dash_labels)
-    #labels = get_labels(labels_cache_key)
+
     person_count = 0
     #display_frame = frame_rgb.copy()
     frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
@@ -389,9 +379,6 @@ class RadarThread(threading.Thread):
     def run(self):
         logging.info("[Radar] Starting")
         try:
-            # with DeviceFmcw() as dev:
-            #     sequence = dev.create_simple_sequence(FmcwSimpleSequenceConfig())
-            #     dev.set_acquisition_sequence(sequence)
             with DeviceFmcw() as dev:
                 # 1) build the simple FMCW sequence
                 cfg = FmcwSimpleSequenceConfig()
@@ -437,21 +424,6 @@ class RadarThread(threading.Thread):
                             logging.warning("[Radar] Record queue full, dropping")
                     # Display
                     if self.display:
-                        # # 1) convert complex→dB: shape (num_rx, Nc, Ns)
-                        # mag = 20 * np.log10(np.abs(raw) + 1e-9)
-                        # # 2) pick antenna 0 slice → 2D
-                        # img2d = mag[0, :, :]             # shape (Nc, Ns)
-                        # # 3) normalize to 0–255
-                        # norm = cv2.normalize(img2d, None, 0, 255, cv2.NORM_MINMAX)
-                        # u8   = norm.astype(np.uint8)
-                        # # 4) apply a colormap
-                        # color = cv2.applyColorMap(u8, cv2.COLORMAP_HOT)
-                        # # 5) tag as radar and queue
-                        # try:
-                        #     self.display_q.put_nowait(("radar", color))
-                        # except queue.Full:
-                        #     pass
-                        # build full Range–Doppler map per antenna
                         mag = 20 * np.log10(np.abs(raw) + 1e-9)  # shape (num_rx, Nc, Ns)
                         maps = [mag[i,:,:] for i in range(mag.shape[0])]
                         msg = {"type":"data", "data":maps, "num_ant":len(maps)}
@@ -476,6 +448,9 @@ class CameraThread(threading.Thread):
         self.threshold = threshold
         self.iou = iou
         self.stats   = stats
+        # persistent FPS counters
+        self._frame_count = 0
+        self._start_time  = time.time()
 
     def run(self):
         logging.info("[Camera] Starting")
@@ -489,25 +464,6 @@ class CameraThread(threading.Thread):
                 md = picam.capture_metadata()
                 arr = picam.capture_array("main")
                 # AI inference
-                # out = imu.get_outputs(md, add_batch=True)
-                # dets = []
-                # if out is not None:
-                #     try:
-                #         boxes, scores, classes = postprocess_nanodet_detection(
-                #             out[0],
-                #             conf=self.threshold,
-                #             iou_thres=self.iou,
-                #             max_out_dets=10
-                #         )
-                #     except Exception as e:
-                #         # sometimes the NN produces zero proposals → internal broadcast error
-                #         logging.warning(f"postprocess_nanodet_detection failed, treating as no detections: {e}")
-                #         boxes, scores, classes = np.empty((0,4)), [], []                    
-                    
-                #     for b, s, c in zip(boxes, scores, classes):
-                #         if s >= self.threshold:
-                #             dets.append((list(map(int,b)), float(s), int(c)))
-                # Record
                 detections = parse_detections(md, picam, imu.network_intrinsics)
                 # record
                 if recording_event.is_set():
@@ -515,29 +471,28 @@ class CameraThread(threading.Thread):
                     self.record_q.put_nowait(("camera", frame_idx, ts, arr, dto))
 
                 # display
-                # if self.display:
-                #     disp_frame, count = draw_detections(arr, detections, intrinsics)
-                #     self.display_q.put_nowait(("camera", disp_frame))
-                # display (always catch queue.Full)
-                frame_count = 0
-                start_time  = time.time()
                 if self.display:
+                    # always draw detections
                     disp_frame, _ = draw_detections(arr, detections, intrinsics)
+                    
+                    # Convert to RGB for realistic view
+                    disp_frame = cv2.cvtColor(disp_frame, cv2.COLOR_BGR2RGB)
+                    # overlay stats if requested
                     if self.stats:
-                        frame_count += 1
-                        elapsed = time.time() - start_time
-                        fps     = frame_count / elapsed if elapsed>0 else 0.0
+                        self._frame_count += 1
+                        elapsed = time.time() - self._start_time
+                        fps     = self._frame_count / elapsed if elapsed > 0 else 0.0
                         cpu     = psutil.cpu_percent(interval=None)
                         mem     = psutil.virtual_memory().percent
-                        cv2.putText(disp_frame, f"FPS: {fps:.1f}",            (10,30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-                        cv2.putText(disp_frame, f"CPU: {cpu:.0f}%",           (10,60),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255),2)
-                        cv2.putText(disp_frame, f"MEM: {mem:.0f}%",           (10,90),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255),2)
-
+                        cv2.putText(disp_frame, f"FPS: {fps:5.1f}",    (10,30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (  0,255,  0), 2)
+                        cv2.putText(disp_frame, f"CPU: {cpu:5.0f} %",  (10,60),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (  0,255,255), 2)
+                        cv2.putText(disp_frame, f"MEM: {mem:5.0f} %",  (10,90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (  0,255,255), 2)
                     try:
                         self.display_q.put(("camera", disp_frame), block=False)
+
                     except queue.Full:
                         # drop oldest
                         try: self.display_q.get(block=False)
@@ -546,25 +501,6 @@ class CameraThread(threading.Thread):
                         try: self.display_q.put(("camera", disp_frame), block=False)
                         except queue.Full: pass
 
-                # if recording_event.is_set():
-                #     try:
-                #         dto = [d.to_dict() for d in detections]
-                #         self.record_q.put_nowait(("camera", frame_idx, ts, arr, dto))
-                #         # self.record_q.put_nowait(("camera", frame_idx, ts, arr, dets))
-                #     except queue.Full:
-                #         logging.warning("[Camera] Record queue full, dropping")
-                # # Display
-                # if self.display:
-                #     # vis = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
-                #     # for box, score, cls in dets:
-                #     #     x,y,w,h = box
-                #     #     cv2.rectangle(vis, (x,y),(x+w,y+h),(0,255,0),2)
-                #     display_frame, person_count = draw_detections(arr, detections, imu.network_intrinsics)
-                #     self.display_q.put_nowait(("camera", display_frame))
-                #     # try:
-                #         # self.display_q.put_nowait(vis)
-                #     # except queue.Full:
-                #         # pass
                 frame_idx = 1
         except Exception:
             logging.exception("[Camera] Error")
@@ -641,9 +577,6 @@ def main():
         time.sleep(2.0)    # give it a moment
         picam2.start()
 
-
-
-
     except Exception as e:
         logging.critical(f"Camera/AI init failed: {e}")
         sys.exit(1)
@@ -678,8 +611,7 @@ def main():
                    iou=args.iou)
     ]
 
-    # threads.append(RadarThread(disp_queue, record_q, dash_event, args.display))
-    # threads.append(CameraThread(disp_queue, record_q, dash_event, args.display,  args.stats, args.model, args.threshold, args.iou))
+
     if args.record:
         threads.append(RecordThread(record_q, session_path))
     for t in threads: t.start()
@@ -690,55 +622,11 @@ def main():
         while not dash_event.is_set():
 
             if args.display:
-                # try:
-                #     typ, frame = disp_queue.get(timeout=0.1)
-                # except queue.Empty:
-                #     continue
-
-                # if typ == "camera":
-                #     # Display RGB for virtualization
-                #     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                #     cv2.imshow("Camera AI (Live)", frame)
-                # elif typ == "radar":
-                #     # cv2.imshow("Radar (Live)", frame)
-                #     try:
-                #         update = radar_disp_queue.get_nowait()
-                #         if update['type']=='data':
-                #             radar_plot.draw(update['data'])
-                #     except queue.Empty:
-                #         pass
-                # key = cv2.waitKey(1) & 0xFF
-                # if key == ord('q'):
-                #     dash_event.set()
-                #     break
-                # # must call waitKey to update both windows
-                # # if cv2.waitKey(1) in (ord('q'), 27):
-                # #     dash_event.set()
-                # #     break       
-                #                 # camera
-                # try:
-                #     typ, frame = disp_queue.get(timeout=0.1)
-                #     if typ=="camera":
-                #         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                #         cv2.imshow("Camera AI (Live)", rgb)
-                # except queue.Empty: pass
-
-                # # radar (matplotlib)
-                # try:
-                #     upd = radar_disp_queue.get_nowait()
-                #     if upd['type']=='data':
-                #         radar_plot.draw(upd['data'])
-                # except queue.Empty: pass
-
-                # if cv2.waitKey(1)==ord('q'):
-                #     dash_event.set()
-                #     break
-                # camera frame
                 try:
                     typ, frame = disp_queue.get(timeout=0.1)
                     if typ == "camera":
-                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                        cv2.imshow("Camera AI (Live)", rgb)
+                        cv2.imshow("Camera AI (Live)", frame)
+
                 except queue.Empty:
                     pass
 
@@ -754,8 +642,7 @@ def main():
                 if cv2.waitKey(1) == ord('q'):
                     dash_event.set()
                     break
-                else:
-                    time.sleep(0.1)
+
     except KeyboardInterrupt:
         dash_event.set()
     finally:
