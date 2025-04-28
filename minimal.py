@@ -20,6 +20,11 @@ from datetime import datetime
 from functools import lru_cache
 # External imports
 try:
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+
+try:
     import cv2
     import numpy as np
     from ifxradarsdk import get_version_full
@@ -51,6 +56,11 @@ RADAR_BANDWIDTH_HZ         = 460_000_000      # 460 MHz
 RADAR_CENTER_FREQ_HZ       = 60_750_000_000   # 60.75 GHz
 RADAR_TX_POWER             = 31               # max power level
 RADAR_IF_GAIN_DB           = 33
+LIGHT_SPEED = 299_792_458
+RADAR_RANGE_RESOLUTION_M = LIGHT_SPEED / (2 * RADAR_BANDWIDTH_HZ)
+RADAR_MAX_RANGE_M = (RADAR_NUM_SAMPLES_PER_CHIRP * LIGHT_SPEED) / (4 * RADAR_BANDWIDTH_HZ)
+RADAR_MAX_SPEED_M_S = 3.0
+
 # ---------------------------------------------------
 AI_THRESHOLD = 0.55
 AI_IOU = 0.65
@@ -78,6 +88,157 @@ logging.basicConfig(
 dash_event = threading.Event()
 recording_event = threading.Event()
 record_q = queue.Queue(maxsize=QUEUE_SIZE)
+
+class RadarDraw:
+    """Draws Radar Range-Doppler Map for Live View. (Conditional)"""
+    # --- Use the implementation from fusion_v4.py ---
+    # --- Ensure it checks ENABLE_LIVE_VIEW and uses logging ---
+    # --- Omitted for brevity, assume it's the v4 version ---
+    # <<< PASTE RadarDraw class code from fusion_v4.py HERE >>>
+    # (Ensure it handles `plt=None` if matplotlib is not installed)
+    # --- Matplotlib (Radar) Imports ---
+    # (Code is identical to fusion_v3.py - omitted for brevity, assume it's here)
+    # Key methods: __init__, setup_plot, _draw_first_time, _draw_next_time, draw, handle_close, close
+    # Ensure logging is used instead of print if desired within the class.
+    """Modified Draw class for radar visualization using Matplotlib."""
+    def __init__(self, max_speed_m_s, max_range_m, num_ant, stop_signal_event, display_is_enabled):
+        self._h = []
+        self._img_h = [] # Separate list for image handles if needed
+        self._cbar_h = None # Handle for colorbar
+        self._max_speed_m_s = max_speed_m_s # Note: Need to calculate this based on config
+        self._max_range_m = max_range_m # Note: Need to calculate this based on config
+        self._num_ant = num_ant
+        self._fig = None
+        self._ax = None
+        self._is_window_open = False
+        self._stop_event = stop_signal_event # Reference to the main stop event
+        self._vmin = -60 # Default min dB for plotting
+        self._vmax = 0 # Default max dB for plotting
+        self.display_is_enabled = display_is_enabled
+    def setup_plot(self):
+        """Sets up the Matplotlib figure and axes. Call this from the main thread."""
+        if not plt or not self.display_is_enabled:
+             # logging.info("Matplotlib display disabled or library not available.")
+             return # Skip if display disabled or matplotlib not installed
+        try:
+            plt.ion()
+            # Adjust figsize based on antenna count
+            figsize_w = max(5, self._num_ant * 2.5 + 1.5)
+            figsize_h = 3.5
+            self._fig, self._ax = plt.subplots(nrows=1, ncols=self._num_ant, figsize=(figsize_w, figsize_h), squeeze=False) # Always returns 2D array
+            self._ax = self._ax.flatten() # Flatten to 1D array for easier indexing
+
+            self._fig.canvas.manager.set_window_title("Range-Doppler Map (Live)")
+            # Connect close event to the main stop signal
+            self._fig.canvas.mpl_connect('close_event', self.handle_close)
+            self._is_window_open = True
+            logging.info("Radar plot initialized.")
+        except Exception as e:
+             logging.error(f"Failed to initialize radar plot: {e}")
+             self._is_window_open = False
+
+    def _update_plot_data(self, data_all_antennas):
+        """Helper to update plot data and color limits."""
+        if not self._is_window_open or not plt or not self._fig or not plt.fignum_exists(self._fig.number): return False
+
+        valid_data = [d for d in data_all_antennas if d is not None and d.size > 0]
+        if not valid_data:
+            return False # No data to plot
+
+        min_val = min(np.min(d) for d in valid_data)
+        max_val = max(np.max(d) for d in valid_data)
+        self._vmin = max(-80, min_val) # Example floor
+        self._vmax = max_val
+
+        if len(self._img_h) != self._num_ant: return False
+
+        for i_ant in range(self._num_ant):
+             if i_ant < len(self._img_h) and self._img_h[i_ant] is not None: # Check handle exists
+                data = data_all_antennas[i_ant]
+                if data is not None:
+                    self._img_h[i_ant].set_data(data)
+                    self._img_h[i_ant].set_clim(vmin=self._vmin, vmax=self._vmax)
+
+        if self._cbar_h:
+             self._cbar_h.mappable.set_clim(vmin=self._vmin, vmax=self._vmax)
+
+        return True
+
+    def draw(self, data_all_antennas):
+        """Draws the plot. Called from the main thread."""
+        if not self._is_window_open or not plt or not self._fig or not plt.fignum_exists(self._fig.number) or not self.display_is_enabled:
+            return
+
+        try:
+            # Initialize plot elements on first valid draw
+            if not self._img_h and any(d is not None for d in data_all_antennas):
+                logging.debug("First draw initialization for radar plot.")
+                self._img_h = [None] * self._num_ant
+                valid_data = [d for d in data_all_antennas if d is not None and d.size > 0]
+                if valid_data:
+                     self._vmin = max(-80, min(np.min(d) for d in valid_data))
+                     self._vmax = max(np.max(d) for d in valid_data)
+
+                for i_ant in range(self._num_ant):
+                     if self._ax[i_ant]: # Check if axis exists
+                         data = data_all_antennas[i_ant]
+                         if data is not None:
+                             # *** Calculate max_range and max_speed if not pre-calculated ***
+                             # These depend on final radar config, ideally pass them in
+                             # Placeholder values for now
+                             temp_max_range = 5.0
+                             temp_max_speed = 3.0
+                             im = self._ax[i_ant].imshow(
+                                 data, vmin=self._vmin, vmax=self._vmax, cmap='hot',
+                                 extent=(-temp_max_speed, temp_max_speed, 0, temp_max_range),
+                                 origin='lower', interpolation='nearest', aspect='auto'
+                             )
+                             self._img_h[i_ant] = im
+                             self._ax[i_ant].set_xlabel("Velocity (m/s)")
+                             self._ax[i_ant].set_ylabel("Distance (m)")
+                             self._ax[i_ant].set_title(f"Antenna #{i_ant}")
+                         else:
+                              self._ax[i_ant].set_title(f"Antenna #{i_ant} (No data)")
+                              self._ax[i_ant].set_xticks([])
+                              self._ax[i_ant].set_yticks([])
+
+                valid_img_handles = [h for h in self._img_h if h is not None]
+                if valid_img_handles and not self._cbar_h and self._fig:
+                    try:
+                        self._fig.subplots_adjust(right=0.85)
+                        cbar_ax = self._fig.add_axes([0.88, 0.15, 0.03, 0.7])
+                        self._cbar_h = self._fig.colorbar(valid_img_handles[0], cax=cbar_ax)
+                        self._cbar_h.ax.set_ylabel("Magnitude (dB)")
+                        self._fig.tight_layout(rect=[0, 0, 0.85, 1])
+                    except Exception as layout_err:
+                         logging.warning(f"Could not apply tight_layout after colorbar: {layout_err}")
+
+            # Update existing plot data
+            elif self._img_h:
+                 self._update_plot_data(data_all_antennas)
+
+            # Redraw canvas using plt.pause
+            plt.pause(0.001)
+
+        except Exception as e:
+            logging.error(f"Error during radar plot drawing: {e}", exc_info=True)
+
+    def handle_close(self, event=None):
+        """Handles the close event from Matplotlib."""
+        if self._is_window_open:
+             logging.info("Radar window close requested.")
+             self._is_window_open = False
+             self._stop_event.set()
+
+    def close(self):
+        """Closes the plot resources."""
+        if self._is_window_open:
+            self._is_window_open = False
+            logging.info("Closing radar plot window.")
+            if plt and self._fig:
+                 plt.close(self._fig)
+        if plt:
+             plt.close('all')
 
 
 # =================================================
@@ -276,18 +437,26 @@ class RadarThread(threading.Thread):
                             logging.warning("[Radar] Record queue full, dropping")
                     # Display
                     if self.display:
-                        # 1) convert complex→dB: shape (num_rx, Nc, Ns)
-                        mag = 20 * np.log10(np.abs(raw) + 1e-9)
-                        # 2) pick antenna 0 slice → 2D
-                        img2d = mag[0, :, :]             # shape (Nc, Ns)
-                        # 3) normalize to 0–255
-                        norm = cv2.normalize(img2d, None, 0, 255, cv2.NORM_MINMAX)
-                        u8   = norm.astype(np.uint8)
-                        # 4) apply a colormap
-                        color = cv2.applyColorMap(u8, cv2.COLORMAP_HOT)
-                        # 5) tag as radar and queue
+                        # # 1) convert complex→dB: shape (num_rx, Nc, Ns)
+                        # mag = 20 * np.log10(np.abs(raw) + 1e-9)
+                        # # 2) pick antenna 0 slice → 2D
+                        # img2d = mag[0, :, :]             # shape (Nc, Ns)
+                        # # 3) normalize to 0–255
+                        # norm = cv2.normalize(img2d, None, 0, 255, cv2.NORM_MINMAX)
+                        # u8   = norm.astype(np.uint8)
+                        # # 4) apply a colormap
+                        # color = cv2.applyColorMap(u8, cv2.COLORMAP_HOT)
+                        # # 5) tag as radar and queue
+                        # try:
+                        #     self.display_q.put_nowait(("radar", color))
+                        # except queue.Full:
+                        #     pass
+                        # build full Range–Doppler map per antenna
+                        mag = 20 * np.log10(np.abs(raw) + 1e-9)  # shape (num_rx, Nc, Ns)
+                        maps = [mag[i,:,:] for i in range(mag.shape[0])]
+                        msg = {"type":"data", "data":maps, "num_ant":len(maps)}
                         try:
-                            self.display_q.put_nowait(("radar", color))
+                            self.display_q.put_nowait(msg)
                         except queue.Full:
                             pass
                     frame_idx = 1
@@ -297,7 +466,7 @@ class RadarThread(threading.Thread):
             logging.info("[Radar] Stopped")
 
 class CameraThread(threading.Thread):
-    def __init__(self, display_q, record_q, event, display, model_path, threshold, iou):
+    def __init__(self, display_q, record_q, event, display, stats, model_path, threshold, iou):
         super().__init__(daemon=True)
         self.display_q = display_q
         self.record_q = record_q
@@ -306,18 +475,11 @@ class CameraThread(threading.Thread):
         self.model_path = model_path
         self.threshold = threshold
         self.iou = iou
+        self.stats   = stats
 
     def run(self):
         logging.info("[Camera] Starting")
-        # cam = None
-        # try:
-        #     imu = IMX500(self.model_path)
-        #     picam = Picamera2(imu.camera_num)
-        #     cfg = picam.create_preview_configuration(main={"size":(640,480),"format":"RGB888"})
-        #     picam.configure(cfg)
-        #     imu.show_network_fw_progress_bar()      # v3 did this
-        #     time.sleep(2.0)                         # give the IMX500 a moment to settle
-        #     picam.start()
+
         try:
             imu   = imx500
             picam = picam2
@@ -357,8 +519,23 @@ class CameraThread(threading.Thread):
                 #     disp_frame, count = draw_detections(arr, detections, intrinsics)
                 #     self.display_q.put_nowait(("camera", disp_frame))
                 # display (always catch queue.Full)
+                frame_count = 0
+                start_time  = time.time()
                 if self.display:
                     disp_frame, _ = draw_detections(arr, detections, intrinsics)
+                    if self.stats:
+                        frame_count += 1
+                        elapsed = time.time() - start_time
+                        fps     = frame_count / elapsed if elapsed>0 else 0.0
+                        cpu     = psutil.cpu_percent(interval=None)
+                        mem     = psutil.virtual_memory().percent
+                        cv2.putText(disp_frame, f"FPS: {fps:.1f}",            (10,30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                        cv2.putText(disp_frame, f"CPU: {cpu:.0f}%",           (10,60),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255),2)
+                        cv2.putText(disp_frame, f"MEM: {mem:.0f}%",           (10,90),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255),2)
+
                     try:
                         self.display_q.put(("camera", disp_frame), block=False)
                     except queue.Full:
@@ -447,6 +624,8 @@ def main():
     p.add_argument('--model', default="./imx500-models-backup/imx500_network_yolov8n_pp.rpk")
     p.add_argument('--threshold', type=float, default=0.55)
     p.add_argument('--iou', type=float, default=0.65)
+    p.add_argument('--stats',    action='store_true',
+                   help="Overlay FPS, CPU% and MEM% on camera view")
     args = p.parse_args()
 
     # --- Camera + AI Model Init (one time) ---
@@ -461,6 +640,10 @@ def main():
         imx500.show_network_fw_progress_bar()
         time.sleep(2.0)    # give it a moment
         picam2.start()
+
+
+
+
     except Exception as e:
         logging.critical(f"Camera/AI init failed: {e}")
         sys.exit(1)
@@ -474,11 +657,29 @@ def main():
 
     # Queues for display
     disp_queue = queue.Queue(maxsize=10) if args.display else None
+    # set up display queues
+    radar_disp_queue = queue.Queue(maxsize=5)  if args.display else None
+    if args.display:
+        sensor_info = DeviceFmcw().get_sensor_information()
+        num_rx      = sensor_info["num_rx_antennas"]
+        radar_plot = RadarDraw(RADAR_MAX_SPEED_M_S,
+                               RADAR_MAX_RANGE_M,
+                               num_rx, dash_event, display_is_enabled=True)
+        radar_plot.setup_plot()
 
     # Start threads
     threads = []
-    threads.append(RadarThread(disp_queue, record_q, dash_event, args.display))
-    threads.append(CameraThread(disp_queue, record_q, dash_event, args.display, args.model, args.threshold, args.iou))
+    threads = [
+      RadarThread(radar_disp_queue, record_q, dash_event, display=args.display),
+      CameraThread(disp_queue, record_q, dash_event,
+                   display=args.display, stats=args.stats,
+                   model_path=args.model,
+                   threshold=args.threshold,
+                   iou=args.iou)
+    ]
+
+    # threads.append(RadarThread(disp_queue, record_q, dash_event, args.display))
+    # threads.append(CameraThread(disp_queue, record_q, dash_event, args.display,  args.stats, args.model, args.threshold, args.iou))
     if args.record:
         threads.append(RecordThread(record_q, session_path))
     for t in threads: t.start()
@@ -487,29 +688,74 @@ def main():
     start = time.time()
     try:
         while not dash_event.is_set():
-            now = time.time()
-            if args.duration and (now-start)>args.duration:
-                dash_event.set(); break
+
             if args.display:
-                # try: frame = disp_queue.get(timeout=0.1)
-                # except queue.Empty: continue
-                # if isinstance(frame, np.ndarray): cv2.imshow("Live", frame); cv2.waitKey(1)
+                # try:
+                #     typ, frame = disp_queue.get(timeout=0.1)
+                # except queue.Empty:
+                #     continue
+
+                # if typ == "camera":
+                #     # Display RGB for virtualization
+                #     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                #     cv2.imshow("Camera AI (Live)", frame)
+                # elif typ == "radar":
+                #     # cv2.imshow("Radar (Live)", frame)
+                #     try:
+                #         update = radar_disp_queue.get_nowait()
+                #         if update['type']=='data':
+                #             radar_plot.draw(update['data'])
+                #     except queue.Empty:
+                #         pass
+                # key = cv2.waitKey(1) & 0xFF
+                # if key == ord('q'):
+                #     dash_event.set()
+                #     break
+                # # must call waitKey to update both windows
+                # # if cv2.waitKey(1) in (ord('q'), 27):
+                # #     dash_event.set()
+                # #     break       
+                #                 # camera
+                # try:
+                #     typ, frame = disp_queue.get(timeout=0.1)
+                #     if typ=="camera":
+                #         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                #         cv2.imshow("Camera AI (Live)", rgb)
+                # except queue.Empty: pass
+
+                # # radar (matplotlib)
+                # try:
+                #     upd = radar_disp_queue.get_nowait()
+                #     if upd['type']=='data':
+                #         radar_plot.draw(upd['data'])
+                # except queue.Empty: pass
+
+                # if cv2.waitKey(1)==ord('q'):
+                #     dash_event.set()
+                #     break
+                # camera frame
                 try:
                     typ, frame = disp_queue.get(timeout=0.1)
+                    if typ == "camera":
+                        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        cv2.imshow("Camera AI (Live)", rgb)
                 except queue.Empty:
-                    continue
+                    pass
 
-                if typ == "camera":
-                    cv2.imshow("Camera AI (Live)", frame)
-                elif typ == "radar":
-                    cv2.imshow("Radar (Live)", frame)
+                # radar matplotlib Range–Doppler
+                try:
+                    upd = radar_disp_queue.get_nowait()
+                    if upd["type"] == "data":
+                        radar_plot.draw(upd["data"])
+                except queue.Empty:
+                    pass
 
-                # must call waitKey to update both windows
-                if cv2.waitKey(1) in (ord('q'), 27):
+                # quit key
+                if cv2.waitKey(1) == ord('q'):
                     dash_event.set()
-                    break            
-            else:
-                time.sleep(0.1)
+                    break
+                else:
+                    time.sleep(0.1)
     except KeyboardInterrupt:
         dash_event.set()
     finally:
