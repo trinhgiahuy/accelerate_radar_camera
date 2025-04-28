@@ -127,8 +127,6 @@ logging.basicConfig(level=log_level,
 # Shared Resources & Globals
 # =================================================
 # Queues (initialized later based on config)
-radar_display_queue = queue.Queue(maxsize=5) #if ENABLE_LIVE_VIEW else None
-camera_display_queue = queue.Queue(maxsize=5) #if ENABLE_LIVE_VIEW else None
 recording_queue = queue.Queue(maxsize=RECORDING_QUEUE_SIZE)
 
 # Control Events
@@ -398,260 +396,6 @@ def parse_detections(metadata: dict, cam_instance, net_intrinsics):
     last_camera_results = detections # Update global cache
     return detections
 
-def parse_detections_1(metadata: dict, cam_instance, net_intrinsics): # Use 'net_intrinsics' argument name
-    """Parse the output tensor into Detection objects, assuming Nanodet postprocessing."""
-    # Use the passed 'net_intrinsics' argument, not an undefined variable
-    if not net_intrinsics or not hasattr(net_intrinsics, 'labels'): 
-        logging.error("parse_detections called with invalid net_intrinsics object.")
-        return []
-
-    detections = []
-    # Initialize as empty numpy arrays
-    boxes = np.empty((0, 4), dtype=np.float32)
-    scores = np.empty((0,), dtype=np.float32)
-    classes = np.empty((0,), dtype=np.int64)
-    process_as_nanodet = False
-    
-    try:
-        
-        try:
-            if hasattr(net_intrinsics, 'postprocess') and net_intrinsics.postprocess == "nanodet":
-                process_as_nanodet = True
-                logging.debug("Using 'nanodet'")
-            elif hasattr(net_intrinsics, 'postprocess'):
-                logging.warning(f"NetworkIntrinsic has postprocess {net_intrinsics.postprocess}, not nanodet")
-                process_as_nanodet = True
-            else:
-                logging.warning("No NetworkIntrinsics postprocessing")
-                process_as_nanodet = True
-        except Exception as e:
-            logging.error(f"Error exception {e}")
-            process_as_nanodet = True
-        
-        np_outputs = imx500.get_outputs(metadata, add_batch=True)
-        if np_outputs is None:
-            logging.warning("No NN output found in metadata for this frame.")
-            return [] # Return empty list
-
-        input_w, input_h = imx500.get_input_size()
-
-        # Use the 'net_intrinsics' argument passed to the function
-        labels_cache_key = (tuple(net_intrinsics.labels), net_intrinsics.ignore_dash_labels)
-        labels_list = get_labels(labels_cache_key)
-        
-        if process_as_nanodet:
-        # --- Assume Nanodet Postprocessing ---
-        # *** The problematic 'if/else' block based on .postprocess is removed ***
-            try:
-                results = postprocess_nanodet_detection(
-                    outputs=np_outputs[0], conf=AI_THRESHOLD, # Use constants
-                    iou_thres=AI_IOU, max_out_dets=AI_MAX_DETECTIONS
-                )
-                if not results: temp_boxes, temp_scores, temp_classes = [], [], []
-                else: temp_boxes, temp_scores, temp_classes = results[0]
-
-                # Convert results to NumPy arrays
-                boxes = np.array(temp_boxes, dtype=np.float32)
-                scores = np.array(temp_scores, dtype=np.float32)
-                classes = np.array(temp_classes, dtype=np.int64)
-
-                # Scale boxes if any exist
-                if boxes.shape[0] > 0:
-                    # Ensure 'scale_boxes' is imported or accessible
-                    boxes = scale_boxes(boxes, 1, 1, input_h, input_w, False, False)
-                # Ensure correct empty shape if conversion results in 1D empty array
-                if boxes.ndim == 1 and boxes.shape[0] == 0:
-                     boxes = np.empty((0, 4), dtype=np.float32)
-
-            except ValueError as ve:
-                # Log the specific ValueError from postprocessing
-                logging.error(f"ValueError during Nanodet postprocessing: {ve}. Skipping detections.", exc_info=False)
-                # Reset to empty numpy arrays (already initialized, but good practice)
-                boxes = np.empty((0, 4), dtype=np.float32)
-                scores = np.empty((0,), dtype=np.float32)
-                classes = np.empty((0,), dtype=np.int64)
-            except Exception as post_err:
-                # Catch any other unexpected errors during postprocessing
-                logging.error(f"Unexpected error during Nanodet postprocessing: {post_err}", exc_info=True)
-                boxes = np.empty((0, 4), dtype=np.float32)
-                scores = np.empty((0,), dtype=np.float32)
-                classes = np.empty((0,), dtype=np.int64)
-        else:
-            logging.warning("Skipping postprocessing as Nannodet flag was not set")
-
-        # --- Proceed with creating Detection objects using the resulting arrays ---
-        # Check if 'boxes' is a valid NumPy array for iteration
-        if isinstance(boxes, np.ndarray) and boxes.shape[0] > 0 and boxes.shape[1] == 4:
-             boxes_iter = np.array_split(boxes.astype(float), 4, axis=1)
-             boxes_iter = zip(*boxes_iter)
-        else:
-             boxes_iter = [] # Empty iterator if no valid boxes
-
-        detections = [
-            # Use the 'net_intrinsics' argument here too
-            Detection(box, category, score, metadata, cam_instance, net_intrinsics)
-            for box, score, category in zip(boxes_iter, scores, classes)
-            # Combine threshold and index check (safe even if scores/classes are empty)
-            if score > AI_THRESHOLD and 0 <= int(category) < len(labels_list)
-        ]
-
-    except Exception as e:
-         # Catch errors during get_outputs, get_input_size etc.
-         logging.error(f"Error in main parse_detections logic: {e}", exc_info=True)
-         detections = [] # Ensure empty list on error
-
-    # No need to update global last_camera_results if just returning detections
-    # global last_camera_results
-    # last_camera_results = detections
-    return detections
-
-
-def parse_detections_old_2(metadata: dict, cam_instance, net_intrinsics): # Use 'net_intrinsics' argument name
-    """Parse the output tensor into Detection objects, assuming Nanodet postprocessing."""
-    # Use the passed 'net_intrinsics' argument, not an undefined variable
-    if not net_intrinsics:
-        logging.error("parse_detections called with invalid net_intrinsics object.")
-        return []
-
-    detections = []
-    # Initialize as empty numpy arrays
-    boxes = np.empty((0, 4), dtype=np.float32)
-    scores = np.empty((0,), dtype=np.float32)
-    classes = np.empty((0,), dtype=np.int64)
-
-    try:
-        np_outputs = imx500.get_outputs(metadata, add_batch=True)
-        if np_outputs is None:
-            logging.warning("No NN output found in metadata for this frame.")
-            return [] # Return empty list
-
-        input_w, input_h = imx500.get_input_size()
-
-        # Use the 'net_intrinsics' argument passed to the function
-        labels_cache_key = (tuple(net_intrinsics.labels), net_intrinsics.ignore_dash_labels)
-        labels_list = get_labels(labels_cache_key)
-
-        # --- Assume Nanodet Postprocessing ---
-        # *** The problematic 'if/else' block based on .postprocess is removed ***
-        try:
-            results = postprocess_nanodet_detection(
-                outputs=np_outputs[0], conf=AI_THRESHOLD, # Use constants
-                iou_thres=AI_IOU, max_out_dets=AI_MAX_DETECTIONS
-            )
-            if not results: temp_boxes, temp_scores, temp_classes = [], [], []
-            else: temp_boxes, temp_scores, temp_classes = results[0]
-
-            # Convert results to NumPy arrays
-            boxes = np.array(temp_boxes, dtype=np.float32)
-            scores = np.array(temp_scores, dtype=np.float32)
-            classes = np.array(temp_classes, dtype=np.int64)
-
-            # Scale boxes if any exist
-            if boxes.shape[0] > 0:
-                # Ensure 'scale_boxes' is imported or accessible
-                boxes = scale_boxes(boxes, 1, 1, input_h, input_w, False, False)
-            # Ensure correct empty shape if conversion results in 1D empty array
-            if boxes.ndim == 1 and boxes.shape[0] == 0:
-                 boxes = np.empty((0, 4), dtype=np.float32)
-
-        except ValueError as ve:
-            # Log the specific ValueError from postprocessing
-            logging.error(f"ValueError during Nanodet postprocessing: {ve}. Skipping detections.", exc_info=False)
-            # Reset to empty numpy arrays (already initialized, but good practice)
-            boxes = np.empty((0, 4), dtype=np.float32)
-            scores = np.empty((0,), dtype=np.float32)
-            classes = np.empty((0,), dtype=np.int64)
-        except Exception as post_err:
-            # Catch any other unexpected errors during postprocessing
-            logging.error(f"Unexpected error during Nanodet postprocessing: {post_err}", exc_info=True)
-            boxes = np.empty((0, 4), dtype=np.float32)
-            scores = np.empty((0,), dtype=np.float32)
-            classes = np.empty((0,), dtype=np.int64)
-
-
-        # --- Proceed with creating Detection objects using the resulting arrays ---
-        # Check if 'boxes' is a valid NumPy array for iteration
-        if isinstance(boxes, np.ndarray) and boxes.shape[0] > 0 and boxes.shape[1] == 4:
-             boxes_iter = np.array_split(boxes.astype(float), 4, axis=1)
-             boxes_iter = zip(*boxes_iter)
-        else:
-             boxes_iter = [] # Empty iterator if no valid boxes
-
-        detections = [
-            # Use the 'net_intrinsics' argument here too
-            Detection(box, category, score, metadata, cam_instance, net_intrinsics)
-            for box, score, category in zip(boxes_iter, scores, classes)
-            # Combine threshold and index check (safe even if scores/classes are empty)
-            if score > AI_THRESHOLD and 0 <= int(category) < len(labels_list)
-        ]
-
-    except Exception as e:
-         # Catch errors during get_outputs, get_input_size etc.
-         logging.error(f"Error in main parse_detections logic: {e}", exc_info=True)
-         detections = [] # Ensure empty list on error
-
-    # No need to update global last_camera_results if just returning detections
-    global last_camera_results
-    last_camera_results = detections
-    return detections
-
-def parse_detections_old(metadata: dict, cam_instance, net_intrinsics):
-    """Parse the output tensor into Detection objects."""
-    if not net_intrinsics_obj: return []
-    detections = []
-    
-    boxes = np.empty((0,4),dtype=np.float32)
-    scores = np.empty((0,), dtype=np.float32)
-    classes = np.empty((0,), dtype=np.int64)
-    
-    try:
-        np_outputs = imx500.get_outputs(metadata, add_batch=True)
-        if np_outputs is None: 
-            logging.warning("No NN output found in metada for this frame")
-            return []
-
-        input_w, input_h = imx500.get_input_size()
-        labels_cache_key = (tuple(net_intrinsics_obj.labels), net_intrinsics_obj.ignore_dash_labels)
-        labels_list = get_labels(labels_cache_key)
-        # Using nanodet postprocessing defined by the constants
-        if net_intrinsics_obj.postprocess == "nanodet":
-            try:
-                results = postprocess_nanodet_detection(
-                    outputs=np_outputs[0], conf=AI_THRESHOLD,
-                    iou_thres=AI_IOU, max_out_dets=AI_MAX_DETECTIONS
-                )
-                if not results: # Check if results list is empty
-                     boxes, scores, classes = [], [], []
-                else:
-                     boxes, scores, classes = results[0] # Unpack the first element (batch)
-                boxes = np.array(boxes, dtype=np.float32)
-                scores = np.array(scores, dtype=np.float32)
-                classes = np.array(classes, dtype=np.int64)
-                
-                if boxes.shape[0] > 0:
-                    boxes = scale_boxes(boxes, 1, 1, input_h, input_w, False, False)
-                if boxes.ndim == 1 and boxes.shape[0] == 0:
-                     boxes = np.empty((0, 4), dtype=np.float32)
-            except ValueError as ve:
-                logging.error(f"ValueError")
-            except Exception as post_err:
-                logging.error(f"Unexpected error during Nanodet postprocessing {post_err}")
-        else:
-            logging.warning(f"Unsupported postprocessing type {net_intrinsics_obj.postprocessing}")
-        
-        if boxes.shape[0] > 0 and boxes.shape[1] == 4:
-             boxes_iter = np.array_split(boxes.astype(float), 4, axis=1); boxes_iter = zip(*boxes_iter)
-        else: boxes_iter = []
-
-        detections = [
-            Detection(box, category, score, metadata, cam_instance, net_intrinsics_obj)
-            for box, score, category in zip(boxes_iter, scores, classes)
-            if score > AI_THRESHOLD and 0 <= int(category) < len(labels_list)
-        ]
-    except Exception as e:
-         logging.error(f"Error parsing detections: {e}", exc_info=True)
-         detections = []
-    return detections
 
 def draw_detections(frame, detection_results, net_intrinsics):
     """Draw detections onto frame copy. Returns drawn RGB frame and person count."""
@@ -660,7 +404,8 @@ def draw_detections(frame, detection_results, net_intrinsics):
     #labels = get_labels(labels_cache_key)
     person_count = 0
     #display_frame = frame_rgb.copy()
-    
+    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
     # COPY FROM draw_detections in fusion_v2.py
     labels = get_labels(net_intrinsics)
     person_detected = False
@@ -1131,6 +876,9 @@ def main():
 
 
     # --- Start Worker Threads ---
+    radar_display_queue = queue.Queue(maxsize=5) if display_is_enabled else None
+    camera_display_queue = queue.Queue(maxsize=5) if display_is_enabled else None
+
     logging.info("Starting worker threads...")
     #cam_objects = {'picam2': picam2, 'imx500': imx500, 'intrinsics': intrinsics}
     radar_thread = threading.Thread(target=radar_worker, name="RadarWorker",
